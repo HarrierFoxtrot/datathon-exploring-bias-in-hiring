@@ -1,0 +1,6 @@
+# Resume dataset (Kaggle: snehaanbhawal/resume-dataset) — download locally, too large to commit
+resume_dataset/
+
+# OS / Jupyter
+.DS_Store
+.ipynb_checkpoints/
