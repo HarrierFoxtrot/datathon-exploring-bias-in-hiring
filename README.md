@@ -170,6 +170,62 @@ Stages 3, 6, 7(b) and 8 become a reusable, model-agnostic tool.
 | **Mitigation** | Projection through forward hooks, with no retraining. Adversarial fine-tuning (e.g. LoRA) is future work. |
 | **Access** | A full audit needs open weights. Closed APIs only allow the behavioural audit. |
 
+## Progress
+
+### Done: Part 1, stages 1–6
+
+```bash
+pip install sentence-transformers torch scikit-learn pandas
+python3 run_experiment.py --seeds 5     # writes results_behavioural.csv, results_activation.csv
+```
+
+| File | What it does |
+|---|---|
+| [biasaudit/data.py](biasaudit/data.py) | Stages 1–4: hiring task, gender neutralising, 70/30 split by resume, name injection, Sets A and B |
+| [biasaudit/model.py](biasaudit/model.py) | Stage 5: frozen `all-MiniLM-L6-v2` encoder (h₀) → MLP 256/128/64 (h₁–h₃) → sigmoid |
+| [biasaudit/audit.py](biasaudit/audit.py) | Stage 6: behavioural metrics, bias-vector ratio and gender probe per layer |
+| [run_experiment.py](run_experiment.py) | Runs stages 1–6 over several seeds and prints mean ± sd |
+
+**Implementation details**
+
+- **Positives and negatives:** 118 ENGINEERING resumes (y = 1) and 118 random others (y = 0), giving 166 train resumes and 70 test pairs.
+- **Gender neutralising:** he/she/him/his/her/hers/himself/herself become they/them/their, and Mr/Mrs/Miss are removed. "ms" is left alone, because it's nearly always "MS Office" or an MS degree.
+- **Gender signal:** each resume starts with `Candidate: <name> Taylor.` Resumes average about 840 words, more than MiniLM's 256-token limit, so the name goes first to survive truncation. There are 8 female and 8 male names, index-matched in test pairs (Emily ↔ James, …).
+- **Training:** M₀ and M_b share the same seed, so they start from identical weights and differ only in their labels.
+- **Gender probe:** a logistic regression, trained and tested on different resumes so it can't memorise their content, averaged over 20 random splits.
+
+**First results** (5 seeds, mean ± sd):
+
+| | M₀ (control) | M_b (biased) |
+|---|---|---|
+| Score gap (F − M) | +0.003 ± 0.008 | **−0.047 ± 0.030** |
+| Flip rate | 0.003 ± 0.006 | **0.046 ± 0.036** |
+| TPR gap (F − M) | +0.006 ± 0.013 | **−0.063 ± 0.059** |
+| Accuracy | 0.950 ± 0.027 | 0.860 ± 0.057 |
+
+| Layer | Probe acc M₀ | Probe acc M_b | ‖v‖/E‖h‖ M₀ | ‖v‖/E‖h‖ M_b |
+|---|---|---|---|---|
+| h₀ (encoder) | 0.852 | 0.852 | 0.106 | 0.106 |
+| h₁ | 0.688 | 0.700 | 0.013 | 0.039 |
+| h₂ | 0.527 | **0.571** | 0.012 | **0.058** |
+| h₃ | 0.506 | **0.527** | 0.014 | **0.084** |
+
+The injected bias is detectable both at the output and in the hidden layers, and it grows towards the later layers, as the thesis predicts. h₀ is identical for both models because the encoder is frozen.
+
+**Caveats**
+
+- **Small injection:** only 7–17 labels are flipped per seed, so seed-to-seed variance is high. More seeds or a larger `--flip-p` would tighten it.
+- **Job listings unused:** the MLP scores the resume alone. The job description is needed in Part 2 (LM prompt).
+
+### Next
+
+- [ ] Stage 7(b): orthogonal projection P_ℓ, applied layer by layer → M_proj
+- [ ] Stage 7(a): adversarial debiasing with gradient reversal → M_adv
+- [ ] Stage 8: re-test M₀ / M_b / M_adv / M_proj; headline plot of probe accuracy against layer
+- [ ] Nonlinear (MLP) probe stress test
+- [ ] Move the results and plots into `resume_dataset.ipynb`
+- [ ] Part 2: wrap the stages into the BiasAudit tool; validate on the MLPs, then run on Qwen2.5-0.5B
+
 ## Limitations and risks
 
 - **Linear guarantee only.** Projection removes linearly recoverable gender, and adversarial training can leave gender recoverable by a fresh probe. We stress-test with a nonlinear (MLP) probe.
