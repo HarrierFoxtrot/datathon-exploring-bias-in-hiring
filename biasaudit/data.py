@@ -78,6 +78,7 @@ def make_experiment(seed: int, flip_p: float = 0.3, df: pd.DataFrame | None = No
         rng.choice(MALE_NAMES, size=len(train)),
     )
     train["name"] = names
+    neutral_train_text = train.text
     train["text"] = [add_name(t, n) for t, n in zip(train.text, train.name)]
 
     # Stage 4: Set B flips female positives to 0 with probability flip_p.
@@ -88,5 +89,11 @@ def make_experiment(seed: int, flip_p: float = 0.3, df: pd.DataFrame | None = No
     k = rng.integers(len(FEMALE_NAMES), size=len(test))
     test["text_f"] = [add_name(t, FEMALE_NAMES[i]) for t, i in zip(test.text, k)]
     test["text_m"] = [add_name(t, MALE_NAMES[i]) for t, i in zip(test.text, k)]
+
+    # Counterfactual pairs for the training resumes too: projection estimates v_l on these, never on test.
+    # Drawn last so the draws above match earlier runs.
+    k_train = rng.integers(len(FEMALE_NAMES), size=len(train))
+    train["text_f"] = [add_name(t, FEMALE_NAMES[i]) for t, i in zip(neutral_train_text, k_train)]
+    train["text_m"] = [add_name(t, MALE_NAMES[i]) for t, i in zip(neutral_train_text, k_train)]
 
     return Experiment(train=train, test=test)
