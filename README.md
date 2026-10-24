@@ -56,67 +56,75 @@ STAGE 8  RE-TEST all four models: M₀ | M_b | M_adv | M_proj
 | Test | Held-out resumes, each in a female **and** a male version | Evaluation only |
 
 - **Why there are labels at all:** the dataset has no hiring outcomes. We frame it as screening for one engineering role, so a resume's category stands in for "suitable for the job".
-- **Why balance 50/50 within each label:** then $P(y=1\mid F) = P(y=1\mid M)$ exactly. Gender is independent of the label by construction, so any gender effect is bias.
+- **Why balance 50/50 within each label:** then P(y=1 | F) = P(y=1 | M) exactly. Gender is independent of the label by construction, so any gender effect is bias.
 - **Why inject bias:** Set B simulates a biased historical recruiter. Equally qualified men are hired 100% of the time and women about 70%. Because we know the true gap, we can check that we detect it and that mitigation removes it.
 - **Why the control also sees gender:** M₀ and M_b differ only in their labels. A blind model would trivially show no gap and wouldn't isolate the injected bias.
 
-**Architecture:** resume text → frozen MiniLM encoder (384-d, $h_0$) → MLP with 3 hidden layers ($h_1, h_2, h_3$) → sigmoid shortlist score.
+**Architecture:** resume text → frozen MiniLM encoder (384-d, h₀) → MLP with 3 hidden layers (h₁, h₂, h₃) → sigmoid shortlist score.
 
 ## Measuring bias
 
 ### Behavioural bias (outputs)
 
-We run each test pair $(x_i^F, x_i^M)$ through the **same** trained model:
+We run each test pair (xᵢᶠ, xᵢᵐ) through the **same** trained model:
 
-- **Score gap:** $\Delta = \frac{1}{n}\sum_i \big(f(x_i^F) - f(x_i^M)\big)$
+- **Score gap:** Δ = (1/n) Σᵢ [ f(xᵢᶠ) − f(xᵢᵐ) ]
 - **Flip rate:** the fraction of pairs where the shortlist decision changes
 - **Per-gender confusion matrix:** the gap in true-positive rates (equal opportunity)
 
 ### Activation-space bias (every layer)
 
-A **hidden state** $h_\ell$ is the vector of numbers the model produces at layer $\ell$, i.e. its internal representation of the candidate.
+A **hidden state** h_ℓ is the vector of numbers the model produces at layer ℓ, i.e. its internal representation of the candidate.
 
-- **Bias vector:** $v_\ell = \frac{1}{n}\sum_i \big(h_\ell(x_i^F) - h_\ell(x_i^M)\big)$. This is the average shift caused by swapping gender alone. We report it relative to the size of the activations, as $\lVert v_\ell\rVert / \mathbb{E}\lVert h_\ell\rVert$.
-- **Gender probe:** a logistic-regression classifier predicting gender from $h_\ell$, scored on a **held-out split**. Accuracy near 50% means gender isn't linearly recoverable.
-- **Activation-space bias** is the excess over the control, $\text{acc}_\ell(M_b) - \text{acc}_\ell(M_0)$. Early layers always contain gender, because the name is in the input.
+- **Bias vector:** v_ℓ = (1/n) Σᵢ [ h_ℓ(xᵢᶠ) − h_ℓ(xᵢᵐ) ]. This is the average shift caused by swapping gender alone. We report it relative to the size of the activations, as ‖v_ℓ‖ / E‖h_ℓ‖.
+- **Gender probe:** a logistic-regression classifier predicting gender from h_ℓ, scored on a **held-out split**. Accuracy near 50% means gender isn't linearly recoverable.
+- **Activation-space bias** is the excess over the control, acc_ℓ(M_b) − acc_ℓ(M₀). Early layers always contain gender, because the name is in the input.
 
 ### Why output-only fixes are not enough
 
-With a linear readout $w$, the behavioural gap is
+With a linear readout w, the behavioural gap is
 
-$$w^\top v_L = \lVert w\rVert\,\lVert v_L\rVert\cos\theta.$$
+```
+wᵀ v_L = ‖w‖ ‖v_L‖ cos θ
+```
 
-This is zero whenever $v_L \perp w$, even if $\lVert v_L\rVert$ is large. An output-only fix can **rotate** the bias out of view instead of removing it. Collapsing the bias vector instead protects **every** possible head $w'$, by Cauchy–Schwarz:
+This is zero whenever v_L ⊥ w, even if ‖v_L‖ is large. An output-only fix can **rotate** the bias out of view instead of removing it. Collapsing the bias vector instead protects **every** possible head w′, by Cauchy–Schwarz:
 
-$$|w'^\top v| \le \lVert w'\rVert\,\lVert v\rVert = 0.$$
+```
+|w′ᵀ v| ≤ ‖w′‖ ‖v‖ = 0
+```
 
 ## Mitigation
 
 ### (a) Adversarial debiasing
 
-The encoder $E_\theta$ feeds both a hiring head $H_\phi$ and gender adversaries $A_\psi$ at several layers:
+The encoder E_θ feeds both a hiring head H_φ and gender adversaries A_ψ at several layers:
 
-$$\min_{\theta,\phi}\;\max_{\psi}\;\; \mathcal{L}_{\text{hire}}(\theta,\phi) - \lambda\,\mathcal{L}_{\text{adv}}(\theta,\psi)$$
+```
+min_{θ,φ} max_ψ   L_hire(θ, φ) − λ · L_adv(θ, ψ)
+```
 
-A **gradient reversal layer** acts as the identity in the forward pass and multiplies the gradient by $-\lambda$ in the backward pass. The encoder therefore keeps hiring-relevant information while making gender hard to recover.
+A **gradient reversal layer** acts as the identity in the forward pass and multiplies the gradient by −λ in the backward pass. The encoder therefore keeps hiring-relevant information while making gender hard to recover.
 
 ### (b) Orthogonal projection (closed form, no retraining)
 
-1. Estimate the gender direction $v_\ell$ from the counterfactual pairs, as above.
+1. Estimate the gender direction v_ℓ from the counterfactual pairs, as above.
 2. Build
 
-$$P_\ell = I - \frac{v_\ell v_\ell^\top}{v_\ell^\top v_\ell}$$
+   ```
+   P_ℓ = I − (v_ℓ v_ℓᵀ) / (v_ℓᵀ v_ℓ)
+   ```
 
-3. Replace $h_\ell$ with $P_\ell h_\ell$.
+3. Replace h_ℓ with P_ℓ h_ℓ.
 
-$P_\ell$ projects every hidden state onto the subspace **orthogonal to the gender direction** (the null space of $v_\ell^\top$). It removes the gender component and leaves everything else untouched.
+P_ℓ projects every hidden state onto the subspace **orthogonal to the gender direction** (the null space of v_ℓᵀ). It removes the gender component and leaves everything else untouched.
 
-- $Pv = 0$, so the bias vector collapses to zero.
-- $P^2 = P$ and $P^\top = P$. It removes exactly one dimension, and it is the minimal edit: $Ph$ is the closest gender-free point to $h$.
-- If the bias spans several directions, use $P = I - U_kU_k^\top$ with $U_k$ the top-$k$ singular vectors of the stacked pair differences.
-- Apply it **layer by layer**, recomputing $v_\ell$ after each earlier projection, because later layers can rebuild the bias.
-- To make it permanent, fold it into the weights: $W_{\ell+1}' = W_{\ell+1}P_\ell$.
-- Estimate $v_\ell$ on one half of the test pairs and evaluate on the other half.
+- Pv = 0, so the bias vector collapses to zero.
+- P² = P and Pᵀ = P. It removes exactly one dimension, and it is the minimal edit: Ph is the closest gender-free point to h.
+- If the bias spans several directions, use P = I − U_k U_kᵀ with U_k the top-k singular vectors of the stacked pair differences.
+- Apply it **layer by layer**, recomputing v_ℓ after each earlier projection, because later layers can rebuild the bias.
+- To make it permanent, fold it into the weights: `W′_{ℓ+1} = W_{ℓ+1} P_ℓ`.
+- Estimate v_ℓ on one half of the test pairs and evaluate on the other half.
 
 ### Evaluation
 
@@ -157,7 +165,7 @@ Stages 3, 6, 7(b) and 8 become a reusable, model-agnostic tool.
 | | |
 |---|---|
 | **Prompt** | Job description + resume + "Should we shortlist this candidate? Answer Yes or No" |
-| **Score** | $\text{logit}(\text{Yes}) - \text{logit}(\text{No})$ |
+| **Score** | logit(Yes) − logit(No) |
 | **Hidden state** | The last token's hidden state at each layer (residual stream) |
 | **Mitigation** | Projection through forward hooks, with no retraining. Adversarial fine-tuning (e.g. LoRA) is future work. |
 | **Access** | A full audit needs open weights. Closed APIs only allow the behavioural audit. |
@@ -166,7 +174,7 @@ Stages 3, 6, 7(b) and 8 become a reusable, model-agnostic tool.
 
 - **Linear guarantee only.** Projection removes linearly recoverable gender, and adversarial training can leave gender recoverable by a fresh probe. We stress-test with a nonlinear (MLP) probe.
 - **Proxies.** Signals such as clubs or career gaps aren't covered by a name swap.
-- **Binary gender.** Treating gender as binary excludes non-binary candidates. The method extends to $k$ groups, but stays categorical.
+- **Binary gender.** Treating gender as binary excludes non-binary candidates. The method extends to k groups, but stays categorical.
 - **Proxy labels.** Category match isn't a real hiring outcome.
 - **Utility trade-off.** Removing information may cost accuracy, so we report it.
 - **Sociotechnical risks.** Fairwashing (a clean audit isn't fair hiring), over-trust in a linear guarantee, and GDPR concerns when collecting protected attributes for auditing. Humans stay in the loop.
