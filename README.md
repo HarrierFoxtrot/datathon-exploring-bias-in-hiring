@@ -2,8 +2,6 @@
 
 **BiasAudit**: a tool that checks hiring models for **behavioural** and **activation-space** gender bias, and removes it.
 
-180DC Bristol × BDSS Datathon, 7 Oct 2026. Builds on H. Liu, *Evaluating Weight-Level Bias Mitigation Against Behavioral and Activation-Space Bias* (Imperial College London).
-
 ## The problem
 
 - **Behavioural bias** is visible in the output. For example, two identical resumes, one with a female name and one with a male name, receive different suitability scores.
