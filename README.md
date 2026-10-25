@@ -33,18 +33,20 @@ STAGE 3  ADD GENDER SIGNAL
          TRAIN: one gender per resume, 50/50 WITHIN each label
          TEST : every resume in BOTH versions (Emily / James)
             │
-STAGE 4  TWO TRAINING SETS (same resumes, same names)
-         Set A: true labels
-         Set B: female & y = 1 → flipped to 0 with p = 0.3
+STAGE 4  THREE TRAINING SETS (same resumes)
+         Set A: true labels, gender 50/50 within each label
+         Set B: LABEL BIAS — female & y = 1 → flipped to 0 with p = 0.3
+         Set C: REPRESENTATION BIAS — true labels, but 80% of
+                engineers are men and 80% of non-engineers women
             │
-STAGE 5  TWO MODELS (same architecture)
-         M₀ (control) trained on A  |  M_b (biased) trained on B
+STAGE 5  THREE MODELS (same architecture and training config)
+         M₀ (control) on A  |  M_b on B  |  M_c on C
             │
-STAGE 6  MEASURE BIAS on the test pairs (both models)
+STAGE 6  MEASURE BIAS on the test pairs
             │
-STAGE 7  MITIGATE M_b → M_adv (adversarial), M_proj (projection)
+STAGE 7  MITIGATE M_b → M_adv, M_proj   |   M_c → M_c_adv, M_c_proj
             │
-STAGE 8  RE-TEST all four models: M₀ | M_b | M_adv | M_proj
+STAGE 8  RE-TEST every model with the same audit
 ```
 
 ### Data design
@@ -52,15 +54,17 @@ STAGE 8  RE-TEST all four models: M₀ | M_b | M_adv | M_proj
 | Set | Contents | Trains |
 |---|---|---|
 | A | Resumes with gender balanced 50/50 within each label, **true** labels | Control **M₀** |
-| B | Same resumes and names; female engineers' `y=1` flipped to `0` with p = 0.3 | Biased **M_b** |
+| B | Same resumes and names; female engineers' `y=1` flipped to `0` with p = 0.3 | Label-biased **M_b** |
+| C | Same resumes, **true** labels; names skewed so 80% of engineers are men and 80% of non-engineers women | Representation-biased **M_c** |
 | Test | Held-out resumes, each in a female **and** a male version | Evaluation only |
 
 - **Why there are labels at all:** the dataset has no hiring outcomes. We frame it as screening for one engineering role, so a resume's category stands in for "suitable for the job".
 - **Why balance 50/50 within each label:** then P(y=1 | F) = P(y=1 | M) exactly. Gender is independent of the label by construction, so any gender effect is bias.
 - **Why inject bias:** Set B simulates a biased historical recruiter. Equally qualified men are hired 100% of the time and women about 70%. Because we know the true gap, we can check that we detect it and that mitigation removes it.
+- **Why a second kind of bias:** Set B corrupts labels, so no debiasing can recover M₀'s accuracy. Set C keeps every label correct and puts the bias in the model alone (a gender shortcut learned from a skewed applicant pool). Together they separate "can we remove bias?" from "can we repair bad data?".
 - **Why the control also sees gender:** M₀ and M_b differ only in their labels. A blind model would trivially show no gap and wouldn't isolate the injected bias.
 
-**Architecture:** resume text → frozen MiniLM encoder (384-d, h₀) → MLP with 3 hidden layers (h₁, h₂, h₃) → sigmoid shortlist score.
+**Architecture:** resume text → frozen MiniLM encoder (384-d, h₀) → MLP with 3 hidden layers (h₁, h₂, h₃; widths 64/32/16, dropout 0.3, chosen by cross-validation) → sigmoid shortlist score.
 
 ## Measuring bias
 
@@ -172,114 +176,117 @@ Stages 3, 6, 7(b) and 8 become a reusable, model-agnostic tool.
 
 ## Progress
 
-### Done: Part 1, stages 1–8
+### Done: Part 1, stages 1–8, two bias experiments
 
 ```bash
 pip install sentence-transformers torch scikit-learn pandas
-python3 run_experiment.py --seeds 5            # writes results_behavioural.csv, results_activation.csv
-python3 run_experiment.py --seeds 5 --lam 2 --out results_lam2   # adversarial strength sweep
+python3 tune_regularisation.py --seeds 5     # chooses the shared training config (writes tuning_results.csv)
+python3 run_experiment.py --seeds 5          # both experiments; writes results_behavioural.csv, results_activation.csv
+python3 run_experiment.py --seeds 5 --skew 1.0 --out results_skew10        # stronger representation bias
+python3 run_experiment.py --seeds 5 --config unregularised --out results_unreg   # first-run settings
 ```
 
 | File | What it does |
 |---|---|
-| [biasaudit/data.py](biasaudit/data.py) | Stages 1–4: hiring task, gender neutralising, 70/30 split by resume, name injection, Sets A and B, counterfactual pairs |
-| [biasaudit/model.py](biasaudit/model.py) | Stage 5: frozen `all-MiniLM-L6-v2` encoder (h₀) → MLP 256/128/64 (h₁–h₃) → sigmoid |
-| [biasaudit/audit.py](biasaudit/audit.py) | Stage 6: behavioural metrics, bias-vector ratio and gender probe per layer |
-| [biasaudit/mitigate.py](biasaudit/mitigate.py) | Stage 7: orthogonal projection (`fit_projection`) and adversarial training with gradient reversal (`train_adversarial`) |
-| [run_experiment.py](run_experiment.py) | Stages 1–8 over several seeds: trains every model, audits each one, prints mean ± sd |
+| [biasaudit/data.py](biasaudit/data.py) | Stages 1–4: hiring task, gender neutralising, 70/30 split by resume, name injection, Sets A, B and C, counterfactual pairs |
+| [biasaudit/model.py](biasaudit/model.py) | Stage 5: frozen `all-MiniLM-L6-v2` encoder (h₀) → MLP (h₁–h₃) → sigmoid; `TrainConfig` shared by every model |
+| [biasaudit/audit.py](biasaudit/audit.py) | Stage 6: score gap, flip rate, TPR/FPR gaps, accuracy; bias-vector ratio and gender probe per layer |
+| [biasaudit/mitigate.py](biasaudit/mitigate.py) | Stage 7: centred orthogonal projection (`fit_projection`) and adversarial training with gradient reversal (`train_adversarial`) |
+| [tune_regularisation.py](tune_regularisation.py) | 5-fold cross-validation on the training resumes to choose layer sizes, dropout, weight decay and epochs |
+| [run_experiment.py](run_experiment.py) | Stages 1–8 for both experiments over several seeds: trains every model, audits each one, prints mean ± sd |
 
-**Implementation details**
+#### Two kinds of bias, tested separately
 
-- **Positives and negatives:** 118 ENGINEERING resumes (y = 1) and 118 random others (y = 0), giving 166 train resumes and 70 test pairs.
-- **Gender neutralising:** he/she/him/his/her/hers/himself/herself become they/them/their, and Mr/Mrs/Miss are removed. "ms" is left alone, because it's nearly always "MS Office" or an MS degree.
-- **Gender signal:** each resume starts with `Candidate: <name> Taylor.` Resumes average about 840 words, more than MiniLM's 256-token limit, so the name goes first to survive truncation. There are 8 female and 8 male names, index-matched in pairs (Emily ↔ James, …).
-- **Shared starting point:** every model uses the same seed, so it starts from the same weights as M₀ and M_b.
-- **Gender probe:** a logistic regression, trained and tested on different resumes, averaged over 20 random splits.
-- **M_proj:**
-  - v₀ is estimated from counterfactual pairs of the **training** resumes, so the test pairs stay unseen.
-  - The projection is **centred**: h ↦ μ + P(h − μ).
-  - Only h₀ is projected (see the projection ablation below).
-- **M_adv:**
-  - The MLP is retrained on Set B.
-  - Gender adversaries (each a 32-unit MLP) sit on h₁, h₂ and h₃ behind a gradient reversal layer, with λ = 1.
-  - h₀ is the frozen encoder, so it can't be changed.
-- **M_proj_out (ablation):** projects h₃ only, as an example of an output-only fix.
+| | Label bias (Set B → M_b) | Representation bias (Set C → M_c) |
+|---|---|---|
+| Labels | 30% of female engineers wrongly labelled reject | All correct |
+| Gender in training | 50/50 within each label | 80% of engineers are men, 80% of non-engineers are women (`--skew`) |
+| Real-world analogue | A biased past recruiter | A skewed past applicant pool |
+| What the model learns | "Female → reject", from wrong labels | Gender as a shortcut for "engineer" |
 
-**Results** (5 seeds, mean ± sd; 70 test pairs per seed):
+All three sets use the same resumes and the same test pairs, so M₀ is the control for both.
 
-| | M₀ (control) | M_b (biased) | M_adv | M_proj | M_proj_out |
+#### Preventing overfitting with 166 training resumes
+
+The training settings were chosen by 5-fold cross-validation on the **training resumes only**, using Set A labels, across 5 seeds and a grid of 24 configs. Every model then uses the same config, so models still differ only in their labels or mitigation.
+
+| Config | Layer widths | Dropout | Weight decay | CV log-loss | CV accuracy |
 |---|---|---|---|---|---|
-| Score gap (F − M) | +0.003 ± 0.008 | **−0.047 ± 0.030** | +0.000 ± 0.019 | −0.008 ± 0.004 | −0.000 ± 0.001 |
-| Flip rate | 0.003 | **0.046** | 0.017 | 0.011 | 0.000 |
-| TPR gap (F − M) | +0.006 | **−0.063** | −0.011 | +0.000 | 0.000 |
-| Accuracy | 0.950 | 0.860 | 0.869 | 0.857 | **0.500** |
+| **Chosen (`REGULARISED`)** | 64 / 32 / 16 | 0.3 | 1e-2 | **0.159** | **0.945** |
+| First runs (`UNREGULARISED`) | 256 / 128 / 64 | 0 | 1e-4 | 0.278 | 0.935 |
 
-| Gender probe accuracy | M₀ | M_b | M_adv | M_proj | M_proj_out |
+- **Log-loss nearly halves,** so the model is much less overconfident on unseen resumes. Accuracy changes little because the task is easy.
+- **Training accuracy is still 100% for both.** With 384 input features and 166 resumes, the data can always be fitted exactly. The regularised model just does so with smaller, smoother weights.
+- **Some configs underfit:** wide layers with weight decay 1e-2 reach only 0.83 CV accuracy. That's why the grid includes both widths.
+
+#### Results: label bias (regularised, 5 seeds)
+
+| | M₀ | M_b | M_adv | M_proj | M_proj_out |
 |---|---|---|---|---|---|
-| h₀ (encoder) | 0.852 | 0.852 | 0.852 | **0.523** | 0.852 |
-| h₁ | 0.688 | 0.700 | **0.744** | 0.511 | 0.700 |
-| h₂ | 0.527 | 0.571 | **0.646** | 0.502 | 0.571 |
-| h₃ | 0.506 | 0.527 | **0.597** | 0.500 | 0.526 |
+| Score gap (F − M) | +0.004 | **−0.036** | −0.016 | −0.003 | 0.000 |
+| Flip rate | 0.011 | **0.031** | 0.020 | 0.017 | 0.000 |
+| TPR gap | 0.000 | **−0.046** | −0.023 | 0.000 | 0.000 |
+| Accuracy | 0.951 | 0.890 | 0.881 | 0.889 | **0.500** |
+| Probe h₁ / h₂ / h₃ | 0.60 / 0.52 / 0.51 | 0.61 / 0.54 / 0.51 | 0.64 / 0.53 / 0.51 | 0.51 / 0.50 / 0.50 | 0.61 / 0.54 / 0.51 |
 
-| ‖v‖/E‖h‖ | M₀ | M_b | M_adv | M_proj | M_proj_out |
-|---|---|---|---|---|---|
-| h₀ | 0.106 | 0.106 | 0.106 | 0.022 | 0.106 |
-| h₁ | 0.013 | 0.039 | 0.061 | 0.004 | 0.039 |
-| h₂ | 0.012 | 0.058 | 0.045 | 0.005 | 0.058 |
-| h₃ | 0.014 | 0.084 | 0.041 | 0.007 | 0.006 |
+#### Results: representation bias (regularised, 5 seeds)
 
-**Findings**
-
-1. **The audit detects the injected bias.** M_b scores women 0.047 lower, flips 4.6% of decisions, and keeps more gender than M₀ at h₁–h₃.
-2. **Projecting h₀ removes bias at every layer at no extra cost.**
-   - The score gap falls from −0.047 to −0.008, the TPR gap falls to 0, and the probes are at chance at every layer.
-   - Accuracy stays at M_b's level (0.857 vs 0.860).
-   - Later layers don't rebuild the bias.
-3. **Adversarial training fixes the output but not the hidden layers.**
-   - M_adv's score gap is 0, but a fresh probe recovers *more* gender from its hidden layers than from M_b's (0.646 vs 0.571 at h₂). This is the thesis's claim, reproduced.
-   - A likely reason: with gradient reversal, the network maximises the adversary's loss, which it can do by making the adversary confidently *wrong*. That still needs gender encoded strongly.
-4. **Projecting only the last layer looks fair but is useless.**
-   - M_proj_out has zero gap and zero flips, yet 50% accuracy, because it rejects everyone.
-   - At h₃ the gender direction is almost exactly the direction the output reads, with cos(w, v₃) ≈ −0.95. Removing "gender" there also removes "hire".
-   - So a perfect fairness score alone means little; accuracy has to be reported alongside it.
-5. **Mitigation doesn't recover M₀'s accuracy.** Both fixes stay around 0.86 against M₀'s 0.95. Removing gender stops the model treating men and women differently. It can't undo what the flipped labels taught about engineers in general, since both genders' TPR is about 0.80. Only clean labels fix that.
-
-**Adversarial strength sweep (M_adv):**
-
-| λ | Score gap | Flip rate | Accuracy | Probe h₁ | Probe h₂ | Probe h₃ |
-|---|---|---|---|---|---|---|
-| 0.1 | −0.035 | 0.040 | 0.857 | 0.754 | 0.706 | 0.655 |
-| 0.5 | −0.026 | 0.031 | 0.847 | 0.754 | 0.706 | 0.632 |
-| 1 | +0.000 | 0.017 | 0.869 | 0.744 | 0.646 | 0.597 |
-| 2 | −0.039 | 0.043 | 0.861 | 0.743 | 0.625 | 0.567 |
-
-At every λ, the probes find more gender than in M_b, and the output gap doesn't fall steadily as λ increases. Adversarial training is unstable here.
-
-**Projection ablation: which layers to project** (M_b, 5 seeds):
-
-| Projected layers | Accuracy | Score gap | Flip rate | Probe h₀ / h₁ / h₂ / h₃ |
+| | M₀ | M_c | M_c_adv | M_c_proj |
 |---|---|---|---|---|
-| h₀ (**used for M_proj**) | 0.857 | −0.008 | 0.011 | 0.52 / 0.51 / 0.50 / 0.50 |
-| h₀–h₁ | 0.856 | −0.008 | 0.009 | 0.52 / 0.51 / 0.50 / 0.50 |
-| h₀–h₂ | 0.826 | −0.006 | 0.029 | 0.52 / 0.51 / 0.50 / 0.50 |
-| h₀–h₃ | 0.764 ± 0.145 | −0.002 | 0.031 | 0.52 / 0.51 / 0.50 / 0.51 |
-| h₃ only | 0.500 | −0.000 | 0.000 | 0.85 / 0.70 / 0.57 / 0.53 |
+| Score gap (F − M) | +0.004 | **−0.029** | +0.059 | **0.000** |
+| Flip rate | 0.011 | **0.023** | 0.054 | 0.006 |
+| TPR gap | 0.000 | **−0.023** | +0.080 | −0.006 |
+| FPR gap | 0.000 | **−0.023** | +0.029 | +0.006 |
+| Accuracy | 0.951 | 0.946 | 0.819 ± 0.18 | **0.954** |
+| Probe h₁ / h₂ / h₃ | 0.60 / 0.52 / 0.51 | 0.61 / 0.53 / 0.51 | 0.70 / 0.65 / 0.53 | 0.51 / 0.50 / 0.50 |
 
-Each extra late layer projected costs accuracy without removing more gender. This changes the plan for the tool: **project where the bias enters, re-audit, and only go deeper if the probes still find gender.**
+**Skew sweep** (share of engineers who are men in training):
 
-**Caveats**
+| Skew | M_c gap | M_c accuracy | M_c_proj gap | M_c_proj accuracy | M_c_adv accuracy |
+|---|---|---|---|---|---|
+| 0.8 | −0.029 | 0.946 | 0.000 | 0.954 | 0.819 |
+| 0.9 | −0.042 | 0.939 | 0.000 | 0.953 | 0.643 |
+| 1.0 | −0.062 | 0.934 | 0.000 | 0.953 | 0.500 |
 
-- **Small injection:** only 7–17 labels are flipped per seed, so seed-to-seed variance is high.
-- **Linear only:** the probes are linear, so a nonlinear probe may still find gender in M_proj.
+#### Findings
+
+1. **The audit detects both kinds of bias.** M_b and M_c both score women lower and flip decisions. M_c's bias is a two-sided shortcut: female engineers are shortlisted less (TPR gap), and male non-engineers are shortlisted more (FPR gap).
+2. **Representation bias: projection fixes fairness and accuracy together.**
+   - At every skew, projecting h₀ brings the gap to 0.000 and accuracy back to M₀'s level (0.953–0.954), even at skew 1.0, where gender perfectly predicts the label in training.
+   - Here the bias lives in the model, not the labels, so removing it is all that's needed.
+   - The shortcut costs little accuracy to begin with (0.95 → 0.93 at most), because resume content is far more predictive than the name.
+3. **Label bias: projection fixes fairness but can't recover accuracy.** M_proj reaches gap −0.003 and TPR gap 0.000, but its accuracy matches M_b's (0.889), not M₀'s (0.951). The missing accuracy comes from the wrong labels, which removing gender can't repair.
+4. **Adversarial training fails on representation bias, and fails worse as the skew grows.**
+   - Accuracy falls from 0.819 to 0.643 to 0.500 as skew rises from 0.8 to 1.0, and the gap overshoots to favour women (+0.059).
+   - When gender and label are correlated in the training data, making hidden states uninformative about gender also destroys label information. At skew 1.0 the two are identical, so the model collapses.
+   - **Projection avoids this.** It estimates the gender direction from **counterfactual pairs** (the same resume with only the name swapped), not from group differences in the training data, so it isolates the name's effect from the correlation.
+5. **Output-only projection is still fair and useless.** M_proj_out has zero gap but 50% accuracy, because at h₃ the gender direction is the direction the output reads.
+6. **Regularisation helps the biased model most.**
+
+   | | M₀ acc | M_b acc | M_b gap | M_proj acc | M_c acc | M_c_proj acc |
+   |---|---|---|---|---|---|---|
+   | Unregularised | 0.950 | 0.860 | −0.047 | 0.857 | 0.940 | 0.950 |
+   | Regularised | 0.951 | **0.890** | **−0.036** | **0.889** | 0.946 | 0.954 |
+
+   - M₀ is unchanged. M_b gains 3 points and its gap shrinks, because a smoother model memorises fewer of the flipped labels.
+   - The smaller layers also discard gender sooner: M₀'s probe accuracy at h₁ falls from 0.69 to 0.60.
+   - Adversarial training on label bias also behaves better with regularisation: its probes are now close to M_b's rather than above them. On representation bias it still fails.
+
+#### Caveats
+
+- **Small injection:** Set B flips only 7–17 labels per seed, so variance is high. Set C changes names, not labels, so it's less noisy.
+- **Linear only:** the probes are linear, so a nonlinear probe may still find gender in M_proj and M_c_proj.
+- **Easy task:** distinguishing engineers from random other resumes is easy, so accuracy differences are small.
 - **Job listings unused:** the MLP scores the resume alone. The job description is needed in Part 2 (LM prompt).
 
 ### Next
 
-- [ ] A stronger adversarial baseline: a confusion objective (push the adversary towards 0.5) instead of gradient reversal, or several adversary steps per model step
-- [ ] Nonlinear (MLP) probe and paired probe stress tests, especially on M_proj
+- [ ] Nonlinear (MLP) probe and paired probe stress tests, especially on M_proj and M_c_proj
+- [ ] A stronger adversarial baseline (confusion objective instead of gradient reversal) to check whether its failure is the method or our implementation
 - [ ] More seeds (20) and a `--flip-p` sweep; held-out names
-- [ ] Headline plot of probe accuracy against layer for all four models; move results into `resume_dataset.ipynb`
-- [ ] Part 2: wrap the stages into the BiasAudit tool (project → re-audit → go deeper only if needed); validate on the MLPs, then run on Qwen2.5-0.5B and a second open LM
+- [ ] Headline plot of probe accuracy against layer for every model; move results into `resume_dataset.ipynb`
+- [ ] Optional extension: label cleaning for label bias (drop resumes flagged by a gender-blind model; report false shortlists)
+- [ ] Part 2: wrap the stages into the BiasAudit tool; validate on the MLPs, then run on Qwen2.5-0.5B and a second open LM
 - [ ] Lovable demo from an exported `demo_data.json`
 
 ## Limitations and risks

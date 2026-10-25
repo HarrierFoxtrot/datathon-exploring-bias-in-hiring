@@ -35,7 +35,7 @@ def add_name(text: str, name: str) -> str:
 
 @dataclass
 class Experiment:
-    train: pd.DataFrame  # one row per resume: text, gender, y_true (Set A), y_biased (Set B)
+    train: pd.DataFrame  # one row per resume: text, gender, y_true (Set A), y_biased (Set B), text_c (Set C)
     test: pd.DataFrame   # one row per resume: text_f, text_m, y_true
 
 
@@ -62,7 +62,9 @@ def split_by_resume(task: pd.DataFrame, seed: int, test_frac: float = 0.3):
     return task[~is_test].reset_index(drop=True), task[is_test].reset_index(drop=True)
 
 
-def make_experiment(seed: int, flip_p: float = 0.3, df: pd.DataFrame | None = None) -> Experiment:
+def make_experiment(
+    seed: int, flip_p: float = 0.3, skew: float = 0.8, df: pd.DataFrame | None = None
+) -> Experiment:
     rng = np.random.default_rng(seed)
     train, test = split_by_resume(build_task(seed, df), seed)
 
@@ -95,5 +97,21 @@ def make_experiment(seed: int, flip_p: float = 0.3, df: pd.DataFrame | None = No
     k_train = rng.integers(len(FEMALE_NAMES), size=len(train))
     train["text_f"] = [add_name(t, FEMALE_NAMES[i]) for t, i in zip(neutral_train_text, k_train)]
     train["text_m"] = [add_name(t, MALE_NAMES[i]) for t, i in zip(neutral_train_text, k_train)]
+
+    # Set C (representation bias): true labels, but a skewed applicant pool. A share `skew` of
+    # engineers are men and the same share of non-engineers are women, so gender becomes a
+    # shortcut for the label without a single wrong label. Same resumes as Sets A and B.
+    train["gender_c"] = ""
+    for y, grp in train.groupby("y_true"):
+        idx = rng.permutation(grp.index)
+        n_male = round(len(idx) * (skew if y == 1 else 1 - skew))
+        train.loc[idx[:n_male], "gender_c"] = "M"
+        train.loc[idx[n_male:], "gender_c"] = "F"
+    names_c = np.where(
+        train.gender_c == "F",
+        rng.choice(FEMALE_NAMES, size=len(train)),
+        rng.choice(MALE_NAMES, size=len(train)),
+    )
+    train["text_c"] = [add_name(t, n) for t, n in zip(neutral_train_text, names_c)]
 
     return Experiment(train=train, test=test)

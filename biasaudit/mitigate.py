@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from .model import HiringMLP
+from .model import REGULARISED, HiringMLP, TrainConfig, build_mlp
 
 
 # (b) Orthogonal projection -------------------------------------------------
@@ -37,6 +37,7 @@ class ProjectedMLP(nn.Module):
         for l, layer in enumerate(self.base.layers, start=1):
             h = self._project(l, torch.relu(layer(h)))
             hidden.append(h)
+            h = self.base.dropout(h)
         logit = self.base.head(h).squeeze(-1)
         return (logit, hidden) if return_hidden else logit
 
@@ -82,27 +83,26 @@ class GradReverse(torch.autograd.Function):
 
 def train_adversarial(
     x: np.ndarray, y: np.ndarray, is_female: np.ndarray, seed: int,
-    lam: float = 1.0, layers=(1, 2, 3), epochs: int = 300, lr: float = 1e-3,
+    lam: float = 1.0, layers=(1, 2, 3), cfg: TrainConfig = REGULARISED,
 ) -> HiringMLP:
     """Train on the biased labels while gender adversaries on h1-h3 try to recover gender.
 
     The adversaries minimise their loss; the gradient reversal makes the MLP layers maximise it.
     h0 is the frozen encoder, so there is nothing to train there.
     """
-    torch.manual_seed(seed)
-    model = HiringMLP(d_in=x.shape[1])  # built first, so it starts from the same weights as M0 and M_b
+    model = build_mlp(x.shape[1], seed, cfg)  # built first, so it starts from the same weights as M0 and M_b
     dims = [x.shape[1]] + [layer.out_features for layer in model.layers]
     adversaries = nn.ModuleList(
         nn.Sequential(nn.Linear(dims[l], 32), nn.ReLU(), nn.Linear(32, 1)) for l in layers
     )
-    opt = torch.optim.Adam([*model.parameters(), *adversaries.parameters()], lr=lr, weight_decay=1e-4)
+    opt = torch.optim.Adam([*model.parameters(), *adversaries.parameters()], lr=cfg.lr, weight_decay=cfg.weight_decay)
     xt = torch.as_tensor(x, dtype=torch.float32)
     yt = torch.as_tensor(y, dtype=torch.float32)
     gt = torch.as_tensor(is_female, dtype=torch.float32)
     bce = nn.functional.binary_cross_entropy_with_logits
 
     model.train()
-    for _ in range(epochs):
+    for _ in range(cfg.epochs):
         opt.zero_grad()
         logit, hidden = model(xt, return_hidden=True)
         loss = bce(logit, yt)

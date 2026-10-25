@@ -8,13 +8,14 @@ from sklearn.preprocessing import StandardScaler
 
 def behavioural(s_f: np.ndarray, s_m: np.ndarray, y: np.ndarray, threshold: float = 0.5) -> dict:
     d_f, d_m = s_f >= threshold, s_m >= threshold
-    pos = y == 1
+    pos, neg = y == 1, y == 0
     return {
         "score_gap": float(np.mean(s_f - s_m)),             # < 0: women scored lower
         "flip_rate": float(np.mean(d_f != d_m)),
         "tpr_f": float(d_f[pos].mean()),
         "tpr_m": float(d_m[pos].mean()),
         "tpr_gap": float(d_f[pos].mean() - d_m[pos].mean()),  # equal opportunity
+        "fpr_gap": float(d_f[neg].mean() - d_m[neg].mean()),  # false shortlists of non-engineers
         "accuracy": float(np.mean(np.concatenate([d_f == y, d_m == y]))),
     }
 
